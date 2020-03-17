@@ -67,7 +67,8 @@ calculate_wt = function( dataframe , spread_days , delta_spread_days , std ) {
       # low_s = pnorm(low_s , mean =  lag(rolling_spread_mean) , sd = lag(rolling_spread_sd)),
       wt = case_when(spread>=upper_s ~ 1 ,
                      spread<=low_s ~ 0 ,
-                     spread<=upper_s & spread>=low_s ~  ((spread-low_s)/(upper_s - low_s))   )
+                     spread<=upper_s & spread>=low_s ~  ((spread-low_s)/(upper_s - low_s))
+                     ))
       # wt = case_when( spread > upper_s  ~ 0   ,
       #                 spread < low_s ~ 1 ,
       #                 spread<=upper_s & spread>=low_s ~  1-((spread-low_s)/(upper_s - low_s)) ))
@@ -131,6 +132,7 @@ calculate_wt = function( dataframe , spread_days , delta_spread_days , std ) {
   return(w_t %>% select(date , wt , upper_s , low_s  , spread ))
 }
 
+
 # 
 # plot = calculate_wt(dataframe = bond_yield , spread_days = 60, delta_spread_days = 60,std = 2)
 # plot = plot %>% arrange(date) %>%
@@ -141,10 +143,9 @@ calculate_wt = function( dataframe , spread_days , delta_spread_days , std ) {
 # apply(plot %>% select(wt : close ,delta_wt), 2 , function(x){ cor(x , plot$bond_return)})
 # 
 
+
+
 # 動態配置策略
-spread_days = 30
-std = 0.5 
-delta_spread_days = 30
 all_equity = data.frame()
 all_return = data.frame()
 all_ws = data.frame()
@@ -259,6 +260,8 @@ for ( spread_days in c(30,60,120,252)){
 }
   
 
+
+
 # 全債券策略
 value = 1
 initial_value = value
@@ -320,10 +323,9 @@ for( i in 1:(length(all_date)-1)){
   
 }
 
+
 equity <- equity %>% mutate(cumRet=(equity)/initial_value -1)
-
 equity <- equity %>% mutate(ret= (equity/lag(equity,1)) -1) %>% filter(!is.na(ret))
-
 # 計算累積報酬率
 cum_ret  = last(equity$cumRet)
 # 對基金日報酬率轉為xts格式
@@ -466,9 +468,16 @@ volatility_controll = function( target_v , ret){
   return(weight_stock)
 }
 
-for ( target_v in seq(0.05,0.1,0.01)){
+for ( target_v in seq(0.15,0.05,-0.05)){
       cat("target_v:" ,target_v,"\n")
       # 月初
+  all_date = bond_yield %>%
+    mutate(ym = substr(date,1,7)) %>%
+    group_by(ym) %>%
+    filter(row_number() == 1)
+  all_date = unique(all_date$date)
+  all_date = c(all_date , ymd(20200131))
+
       value = 1
       initial_value = value
       equity = data.frame()
@@ -988,3 +997,554 @@ for ( i.bond in unique(bond_ETF$name)){
 #             aes(x = date , y = value , color = name ) , size = 1 )
 # library(ggpubr)
 # ggarrange( p , p1 , align = "v" , ncol=1)
+month_ret = tidyr::gather(weight , key="weight" , value = "value" , w_c,w_b)
+
+p = ggplot(month_ret, aes(fill=weight, y=value, x=ymd(date))) + 
+  geom_bar(position="stack", stat="identity") +
+  ylab("配置權重")+
+  theme(axis.title.x=element_blank(),
+        # axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        text = element_text(size=24))
+
+
+
+rm(list=ls())
+library(dplyr)
+library(xts)
+library(PerformanceAnalytics)
+library(lubridate)
+load("bond_yield.rdata")
+
+# 手續成本
+transaction_cost = 0.004
+
+# 權重函數
+calculate_wt = function( dataframe , spread_days , delta_spread_days , std ) {
+  w_t = bond_yield %>%
+    arrange(date) %>%
+    mutate(
+      spread = BC_5Y - rb , 
+      delta_spread = spread - lag(spread) , 
+      rolling_spread_sd  = rollapply(delta_spread ,width = delta_spread_days , FUN = sd , align = "right" , fill=NA) , 
+      rolling_spread_mean  = rollapply(spread ,width = spread_days , FUN = mean , align = "right" , fill=NA) ,
+      upper_s = lag(rolling_spread_mean) + (lag(rolling_spread_mean) -spread )* as.numeric(date-lag(date))/252 + std *lag(rolling_spread_sd),
+      # upper_s = pnorm(upper_s , mean =  lag(rolling_spread_mean) , sd = lag(rolling_spread_sd)),
+      low_s = lag(rolling_spread_mean) + (lag(rolling_spread_mean) -spread )* as.numeric(date-lag(date))/252 - std *lag(rolling_spread_sd) ,
+      # low_s = pnorm(low_s , mean =  lag(rolling_spread_mean) , sd = lag(rolling_spread_sd)),
+      wt = case_when(spread>=upper_s ~ 1 ,
+                     spread<=low_s ~ 0 ,
+                     spread<=upper_s & spread>=low_s ~  ((spread-low_s)/(upper_s - low_s))   ))
+  # wt = case_when( spread > upper_s  ~ 0   ,
+  #                 spread < low_s ~ 1 ,
+  #                 spread<=upper_s & spread>=low_s ~  1-((spread-low_s)/(upper_s - low_s)) ))
+  return(w_t %>% select(date , wt , upper_s , low_s  , spread ))
+}
+# 權重函數2 VC
+volatility_controll = function( target_v , ret){
+  # target_v = 10
+  # dataframe = data.frame( ret = sample(-10:10, 22 , replace = T))
+  # 年化變異數
+  weight_stock = (target_v)^2  / (var(ret , na.rm = T) * 252)
+  weight_stock = ifelse(weight_stock >=1 , 1 , 
+                        ifelse(weight_stock <=0 , 0 ,weight_stock))
+  return(weight_stock)
+}
+# target_v
+target_v = 0.1
+# 紀錄return
+all_return = data.frame()
+# 回測月份
+backtest_date = bond_yield %>%
+  mutate(ym = substr(date,1,7)) %>%
+  group_by(ym) %>%
+  filter(row_number() == 1)
+backtest_date = unique(backtest_date$date)
+
+for(i.date in seq(20090101,20170101,10000)){
+  cat(i.date , "\n")
+  # 全債券策略
+  value = 1
+  initial_value = value
+  equity = data.frame()
+  weight = data.frame()
+  all_date = backtest_date[ which(backtest_date >= ymd(i.date))]
+  for( i in 1:(length(all_date)-1)){
+    # i=1
+    # cat(i ,"/" ,length(all_date)-1 , "\n")
+    # 抓取之前資料 ,如果大於22則計算VC 無則跳至下月
+    # vc_data = i.data %>% filter(date< month_first_date[i])
+    # if(nrow(vc_data) >= 22){
+    
+    
+    # # 股票權重
+    # w_s = volatility_controll(target_v , vc_data$portfolioRet[(nrow(vc_data)-21) : nrow(vc_data)])
+    # # 智能投資組合比例
+    # w_AI_propotion = 1
+    # # bond_ETF 權重
+    # w_b = 1-w_s
+    # # 圖形辨識權重
+    # w_image = w_s * (1-w_AI_propotion)
+    # w_AI = w_s * w_AI_propotion
+    # 債券權重
+    # w_b = find_weight %>% filter(date <= all_date[i])  %>% select(wt) %>% pull() %>% last()
+    # 現金權重
+    # w_c = 1-w_b
+    w_b = 1
+    w_c = 0
+    # 抓取該月份資料
+    month_equity = bond_yield %>% filter(date >= (all_date[i]), date < (all_date[i+1]))
+    # # 當月持有部位
+    # month_hold = historyHoldInfoTable %>% filter(portfolioName == i.name,
+    #                                              inDate >= month_first_date[i] ,
+    #                                              inDate < month_first_date[i+1] ) 
+    
+    # 紀錄權重 持有部位數量
+    weight = bind_rows(weight , data.frame(date = all_date[i] , 
+                                           w_c = w_c , 
+                                           w_b = w_b ))
+    
+    
+    # 計算該月份各部位變化
+    month_equity$bond = cumprod( 1+month_equity$bond_ret ) * w_b * value
+    month_equity$cash = w_c * value
+    # month_equity$image = (1+month_equity$image )* w_image * value
+    # month_equity$image = 0
+    month_equity = month_equity %>% 
+      mutate( equity = bond +cash ) %>%
+      select( date , equity, bond , cash ) %>%
+      mutate( w_c = w_c , w_b= w_b)
+    # equity: date , equity
+    # 紀錄資金
+    equity = bind_rows(equity , month_equity)
+    # 紀錄股票債券權重
+    
+    # 月末 
+    # 計算value
+    value = last(equity$equity)
+    
+  }
+  
+  equity <- equity %>% mutate(cumRet=(equity)/initial_value -1)
+  equity <- equity %>% mutate(ret= (equity/lag(equity,1)) -1) %>% filter(!is.na(ret))
+  # 計算累積報酬率
+  cum_ret  = last(equity$cumRet)
+  # 對基金日報酬率轉為xts格式
+  fundRetXts= xts(equity %>% select(ret), order.by = ymd(equity$date))
+  # 年化報酬率
+  annual_ret = (last(equity$cumRet )+1)^(365/as.double(ymd(last(equity$date))-ymd(first(equity$date))))-1
+  # 夏普比率
+  sharpe_ratio = mean(equity$ret) / sd(equity$ret) * (252^(1/2))
+  # 最大回撤率
+  DD = maxDrawdown(fundRetXts) %>% as.vector()
+  all_return = bind_rows(all_return , data.frame( std = NA , 
+                                                  delta_spread_days = NA , 
+                                                  spread_days = NA , 
+                                                  group = "buyhold",
+                                                  startdate = ymd(i.date),
+                                                  cum_ret = cum_ret , 
+                                                  annual_ret = annual_ret ,
+                                                  annual_std = unname(StdDev.annualized(fundRetXts)),
+                                                  sharpe_ratio = sharpe_ratio , 
+                                                  maxDrawdown = DD))
+  
+  cat("target_v:" ,target_v,"\n")
+  # 月初
+  value = 1
+  initial_value = value
+  equity = data.frame()
+  weight = data.frame()
+  all_date = backtest_date[ which(backtest_date >= ymd(i.date))]
+  
+  
+  for( i in 1:(length(all_date)-1)){
+    # i= 1
+    # cat(i ,"/" ,length(all_date)-1 , "\n")
+    vc_data = bond_yield %>% filter(date< all_date[i])
+    # 抓取前22日債券日報酬變化
+    if(nrow(vc_data) >= 22 ){
+      
+      w_b = volatility_controll(target_v , vc_data$bond_ret[(nrow(vc_data)-21) : nrow(vc_data)])
+      w_b = round(w_b , 2)
+      # 現金權重
+      w_c = 1-w_b
+      
+      # 抓取下月份資料
+      month_equity = bond_yield %>% filter(date >= (all_date[i]), date < (all_date[i+1]))
+      
+      # 抓取該月份資料
+      # find_weight = find_weight %>% filter(date >= (all_date[i]), date < (all_date[i+1]))
+      
+      # # 當月持有部位
+      # month_hold = historyHoldInfoTable %>% filter(portfolioName == i.name,
+      #                                              inDate >= month_first_date[i] ,
+      #                                              inDate < month_first_date[i+1] ) 
+      
+      # 紀錄權重 持有部位數量
+      weight = bind_rows(weight , data.frame(date = all_date[i] , 
+                                             w_c = w_c , 
+                                             w_b = w_b ))
+      
+      
+      # 計算該月份各部位變化
+      month_equity$bond = cumprod( 1+month_equity$bond_ret ) * w_b * value
+      month_equity$cash = w_c * value
+      # month_equity$image = (1+month_equity$image )* w_image * value
+      # month_equity$image = 0
+      month_equity = month_equity %>% 
+        mutate( equity = bond +cash ) %>%
+        select( date , equity, bond , cash ) %>%
+        mutate( w_c = w_c , w_b= w_b)
+      # equity: date , equity
+      # 紀錄資金
+      equity = bind_rows(equity , month_equity)
+      # 紀錄股票債券權重
+      
+      # 月末 
+      # 計算value
+      value = last(equity$equity)
+      
+    }
+    
+  }
+  
+  
+  equity <- equity %>% mutate(cumRet=(equity)/initial_value -1)
+  equity <- equity %>% mutate(ret= (equity/lag(equity,1)) -1) %>% filter(!is.na(ret))
+  # 計算累積報酬率
+  cum_ret  = last(equity$cumRet)
+  # 對基金日報酬率轉為xts格式
+  fundRetXts= xts(equity %>% select(ret), order.by = ymd(equity$date))
+  # 年化報酬率
+  annual_ret = (last(equity$cumRet )+1)^(365/as.double(ymd(last(equity$date))-ymd(first(equity$date))))-1
+  # 夏普比率
+  sharpe_ratio = mean(equity$ret) / sd(equity$ret) * (252^(1/2))
+  # 最大回撤率
+  DD = maxDrawdown(fundRetXts) %>% as.vector()
+  
+  all_return = bind_rows(all_return , data.frame( std = target_v , 
+                                                  delta_spread_days = NA , 
+                                                  spread_days = NA ,
+                                                  group = as.character("VC_月配置"),
+                                                  startdate = ymd(i.date),
+                                                  cum_ret = cum_ret , 
+                                                  annual_ret = annual_ret ,
+                                                  annual_std = unname(StdDev.annualized(fundRetXts)),
+                                                  sharpe_ratio = sharpe_ratio , 
+                                                  maxDrawdown = DD))
+  
+  for ( spread_days in c(30,60)){
+    for ( std in seq(0.5,2,0.5)){
+      for( delta_spread_days in c(30,60)){
+        cat("std:" ,std,";spread_days:" ,spread_days  , ";delta_spread_days:" ,delta_spread_days ,"\n")
+        find_weight = calculate_wt( bond_yield , spread_days = spread_days ,
+                                    std =  std, delta_spread_days =  delta_spread_days)
+        
+        find_weight = find_weight  %>% 
+          na.omit() %>% 
+          arrange(date)
+        all_date = backtest_date[ which(backtest_date >= ymd(i.date))]
+        # 月初
+        value = 1
+        initial_value = value
+        equity = data.frame()
+        weight = data.frame()
+        for( i in 1:(length(all_date)-1)){
+          # i=
+          # cat(i ,"/" ,length(all_date)-1 , "\n")
+          # 抓取前一月最後一日權重資料
+          w_b = find_weight %>% filter(date < all_date[i])  %>% select(wt) %>% pull() %>% last()
+          # 現金權重
+          w_c = 1-w_b
+          
+          # 抓取下月份資料
+          month_equity = bond_yield %>% filter(date >= (all_date[i]), date < (all_date[i+1]))
+          
+          # 抓取該月份資料
+          # find_weight = find_weight %>% filter(date >= (all_date[i]), date < (all_date[i+1]))
+          
+          # # 當月持有部位
+          # month_hold = historyHoldInfoTable %>% filter(portfolioName == i.name,
+          #                                              inDate >= month_first_date[i] ,
+          #                                              inDate < month_first_date[i+1] ) 
+          
+          # 紀錄權重 持有部位數量
+          weight = bind_rows(weight , data.frame(date = all_date[i] , 
+                                                 w_c = w_c , 
+                                                 w_b = w_b ))
+          
+          
+          # 計算該月份各部位變化
+          month_equity$bond = cumprod( 1+month_equity$bond_ret ) * w_b * value
+          month_equity$cash = w_c * value
+          # month_equity$image = (1+month_equity$image )* w_image * value
+          # month_equity$image = 0
+          month_equity = month_equity %>% 
+            mutate( equity = bond +cash ) %>%
+            select( date , equity, bond , cash ) %>%
+            mutate( w_c = w_c , w_b= w_b)
+          # equity: date , equity
+          # 紀錄資金
+          equity = bind_rows(equity , month_equity)
+          # 紀錄股票債券權重
+          
+          # 月末 
+          # 計算value
+          value = last(equity$equity)
+          
+        }
+        
+        
+        
+        
+        equity <- equity %>% mutate(cumRet=(equity)/initial_value -1)
+        
+        equity <- equity %>% mutate(ret= (equity/lag(equity,1)) -1) %>% filter(!is.na(ret))
+        
+        # 計算累積報酬率
+        cum_ret  = last(equity$cumRet)
+        # 對基金日報酬率轉為xts格式
+        fundRetXts= xts(equity %>% select(ret), order.by = ymd(equity$date))
+        # 年化報酬率
+        annual_ret = (last(equity$cumRet )+1)^(365/as.double(ymd(last(equity$date))-ymd(first(equity$date))))-1
+        # 夏普比率
+        sharpe_ratio = mean(equity$ret) / sd(equity$ret) * (252^(1/2))
+        # 最大回撤率
+        DD = maxDrawdown(fundRetXts) %>% as.vector()
+        
+        all_return = bind_rows(all_return , data.frame( std = std , 
+                                                        delta_spread_days = delta_spread_days , 
+                                                        spread_days = spread_days ,
+                                                        group = "月配置",
+                                                        startdate = ymd(i.date),
+                                                        cum_ret = cum_ret , 
+                                                        annual_ret = annual_ret ,
+                                                        annual_std = unname(StdDev.annualized(fundRetXts)),
+                                                        sharpe_ratio = sharpe_ratio , 
+                                                        maxDrawdown = DD))
+        
+      }
+    }
+  }
+}
+
+for ( spread_days in c(30,60,120,252)){
+  for ( std in seq(0.5,2,0.5)){
+    for( delta_spread_days in c(30,60,120,252)){
+      # 計算參數下每日權重
+      cat("std:" ,std,";spread_days:" ,spread_days  , ";delta_spread_days:" ,delta_spread_days ,"\n")
+      find_weight = calculate_wt( bond_yield , spread_days = spread_days ,
+                                  std =  std, delta_spread_days =  delta_spread_days)
+      
+      find_weight = find_weight  %>% 
+        na.omit() %>% 
+        arrange(date)
+      
+      all_date = find_weight %>%
+        mutate(ym = substr(date,1,7)) %>%
+        group_by(ym) %>%
+        filter(row_number() == 1)
+      all_date = unique(all_date$date)
+      all_date = all_date[which(all_date > ymd(20080101))]
+      # 月初
+      value = 1
+      initial_value = value
+      equity = data.frame()
+      weight = data.frame()
+      for( i in 2:(length(all_date)-1)){
+        # i= 2
+        cat(i ,"/" ,length(all_date)-1 , "\n")
+        # 抓取前一月最後一日權重資料
+        w_b = find_weight %>% filter(date < all_date[i])  %>% select(wt) %>% pull() %>% last()
+        # 現金權重
+        w_c = 1-w_b
+        
+        # 抓取下月份資料
+        month_equity = bond_yield %>% filter(date >= (all_date[i]), date < (all_date[i+1]))
+        
+        # 抓取該月份資料
+        # find_weight = find_weight %>% filter(date >= (all_date[i]), date < (all_date[i+1]))
+        
+        # # 當月持有部位
+        # month_hold = historyHoldInfoTable %>% filter(portfolioName == i.name,
+        #                                              inDate >= month_first_date[i] ,
+        #                                              inDate < month_first_date[i+1] ) 
+        
+        # 紀錄權重 持有部位數量
+        weight = bind_rows(weight , data.frame(date = all_date[i] , 
+                                               w_c = w_c , 
+                                               w_b = w_b ))
+        # 計算該月份各部位變化
+        month_equity$bond = cumprod( 1+month_equity$bond_ret ) * w_b * value
+        month_equity$cash = w_c * value
+        # month_equity$image = (1+month_equity$image )* w_image * value
+        # month_equity$image = 0
+        month_equity = month_equity %>% 
+          mutate( equity = bond +cash ) %>%
+          select( date , equity, bond , cash ) %>%
+          mutate( w_c = w_c , w_b= w_b)
+        
+        equity = bind_rows(equity , month_equity)
+        # 月末 
+        # 計算value
+        value = last(equity$equity)
+        
+      }
+      
+      
+      
+      
+      equity <- equity %>% mutate(cumRet=(equity)/initial_value -1)
+      
+      equity <- equity %>% mutate(ret= (equity/lag(equity,1)) -1) %>% filter(!is.na(ret))
+      
+      # 計算累積報酬率
+      cum_ret  = last(equity$cumRet)
+      # 對基金日報酬率轉為xts格式
+      fundRetXts= xts(equity %>% select(ret), order.by = ymd(equity$date))
+      # 年化報酬率
+      annual_ret = (last(equity$cumRet )+1)^(365/as.double(ymd(last(equity$date))-ymd(first(equity$date))))-1
+      # 夏普比率
+      sharpe_ratio = mean(equity$ret) / sd(equity$ret) * (252^(1/2))
+      # 最大回撤率
+      DD = maxDrawdown(fundRetXts) %>% as.vector()
+      
+      all_return = bind_rows(all_return , data.frame( std = std , 
+                                                      delta_spread_days = delta_spread_days , 
+                                                      spread_days = spread_days ,
+                                                      group = "月配置",
+                                                      cum_ret = cum_ret , 
+                                                      annual_ret = annual_ret ,
+                                                      annual_std = unname(StdDev.annualized(fundRetXts)),
+                                                      sharpe_ratio = sharpe_ratio , 
+                                                      maxDrawdown = DD))
+      all_equity = bind_rows(all_equity , equity %>% 
+                               select(date , equity) %>% 
+                               mutate(std = std , 
+                                      delta_spread_days = delta_spread_days , 
+                                      spread_days = spread_days ,
+                                      group = "月配置"))
+      all_ws = bind_rows( all_ws , weight %>% mutate(std = std , 
+                                                     delta_spread_days = delta_spread_days , 
+                                                     spread_days = spread_days ,
+                                                     group = "月配置"))
+    }
+  }
+}
+
+
+
+
+
+
+# volatility_controll 月頻調整
+volatility_controll = function( target_v , ret){
+  # target_v = 10
+  # dataframe = data.frame( ret = sample(-10:10, 22 , replace = T))
+  # 年化變異數
+  weight_stock = (target_v)^2  / (var(ret , na.rm = T) * 252)
+  weight_stock = ifelse(weight_stock >=1 , 1 , 
+                        ifelse(weight_stock <=0 , 0 ,weight_stock))
+  return(weight_stock)
+}
+
+for ( target_v in 0.1){
+  cat("target_v:" ,target_v,"\n")
+  # 月初
+  all_date = bond_yield %>%
+    mutate(ym = substr(date,1,7)) %>%
+    group_by(ym) %>%
+    filter(row_number() == 1)
+  all_date = unique(all_date$date)
+  all_date = c(all_date , ymd(20200131))
+  all_date = all_date[which(all_date>ymd(20080101))]
+  value = 1
+  initial_value = value
+  equity = data.frame()
+  weight = data.frame()
+  for( i in 2:(length(all_date)-1)){
+    # i= 2
+    cat(i ,"/" ,length(all_date)-1 , "\n")
+    vc_data = bond_yield %>% filter(date< all_date[i])
+    # 抓取前22日債券日報酬變化
+    if(nrow(vc_data) >= 22 ){
+      
+      w_b = volatility_controll(target_v , vc_data$bond_ret[(nrow(vc_data)-21) : nrow(vc_data)])
+      w_b = round(w_b , 2)
+      # 現金權重
+      w_c = 1-w_b
+      
+      # 抓取下月份資料
+      month_equity = bond_yield %>% filter(date >= (all_date[i]), date < (all_date[i+1]))
+      
+      # 抓取該月份資料
+      # find_weight = find_weight %>% filter(date >= (all_date[i]), date < (all_date[i+1]))
+      
+      # # 當月持有部位
+      # month_hold = historyHoldInfoTable %>% filter(portfolioName == i.name,
+      #                                              inDate >= month_first_date[i] ,
+      #                                              inDate < month_first_date[i+1] ) 
+      
+      # 紀錄權重 持有部位數量
+      weight = bind_rows(weight , data.frame(date = all_date[i] , 
+                                             w_c = w_c , 
+                                             w_b = w_b ))
+      
+      
+      # 計算該月份各部位變化
+      month_equity$bond = cumprod( 1+month_equity$bond_ret ) * w_b * value
+      month_equity$cash = w_c * value
+      # month_equity$image = (1+month_equity$image )* w_image * value
+      # month_equity$image = 0
+      month_equity = month_equity %>% 
+        mutate( equity = bond +cash ) %>%
+        select( date , equity, bond , cash ) %>%
+        mutate( w_c = w_c , w_b= w_b)
+      # equity: date , equity
+      # 紀錄資金
+      equity = bind_rows(equity , month_equity)
+      # 紀錄股票債券權重
+      
+      # 月末 
+      # 計算value
+      value = last(equity$equity)
+      
+    }
+    
+  }
+  
+  
+  equity <- equity %>% mutate(cumRet=(equity)/initial_value -1)
+  equity <- equity %>% mutate(ret= (equity/lag(equity,1)) -1) %>% filter(!is.na(ret))
+  # 計算累積報酬率
+  cum_ret  = last(equity$cumRet)
+  # 對基金日報酬率轉為xts格式
+  fundRetXts= xts(equity %>% select(ret), order.by = ymd(equity$date))
+  # 年化報酬率
+  annual_ret = (last(equity$cumRet )+1)^(365/as.double(ymd(last(equity$date))-ymd(first(equity$date))))-1
+  # 夏普比率
+  sharpe_ratio = mean(equity$ret) / sd(equity$ret) * (252^(1/2))
+  # 最大回撤率
+  DD = maxDrawdown(fundRetXts) %>% as.vector()
+  
+  all_return = bind_rows(all_return , data.frame( std = target_v , 
+                                                  delta_spread_days = NA , 
+                                                  spread_days = NA ,
+                                                  group = "VC_月配置",
+                                                  cum_ret = cum_ret , 
+                                                  annual_ret = annual_ret ,
+                                                  annual_std = unname(StdDev.annualized(fundRetXts)),
+                                                  sharpe_ratio = sharpe_ratio , 
+                                                  maxDrawdown = DD))
+  all_equity = bind_rows(all_equity , equity %>% 
+                           select(date , equity) %>% 
+                           mutate(std = target_v , 
+                                  delta_spread_days = NA , 
+                                  spread_days = NA ,
+                                  group = "VC_月配置"))
+  all_ws = bind_rows( all_ws , weight %>% mutate(std = target_v , 
+                                                 delta_spread_days = NA , 
+                                                 spread_days = NA ,
+                                                 group = "VC_月配置"))
+  
+}
